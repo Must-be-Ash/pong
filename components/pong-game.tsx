@@ -132,9 +132,11 @@ export default function PongGame({ roomId, isHost, username, opponent }: PongGam
 
     // Handle keyboard input
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "ArrowUp" || e.key === "w") {
+      if (!gameState.isPlaying) return
+      
+      if (e.key === "ArrowUp" || e.key.toLowerCase() === "w") {
         movePaddle(-PADDLE_SPEED)
-      } else if (e.key === "ArrowDown" || e.key === "s") {
+      } else if (e.key === "ArrowDown" || e.key.toLowerCase() === "s") {
         movePaddle(PADDLE_SPEED)
       }
     }
@@ -256,9 +258,9 @@ export default function PongGame({ roomId, isHost, username, opponent }: PongGam
     if (!isHost) return
 
     const updateGame = () => {
-      if (!gameState.isPlaying) return
-
       setGameState((prev) => {
+        if (!prev.isPlaying) return prev
+
         const newState = { ...prev }
 
         // Move ball
@@ -276,8 +278,8 @@ export default function PongGame({ roomId, isHost, username, opponent }: PongGam
           newState.ballY >= newState.paddle1Y &&
           newState.ballY <= newState.paddle1Y + PADDLE_HEIGHT
         ) {
-          newState.ballSpeedX = -newState.ballSpeedX
-          newState.ballSpeedY += Math.random() * 2 - 1
+          newState.ballSpeedX = Math.abs(newState.ballSpeedX) // Ensure ball moves right
+          newState.ballSpeedY += (Math.random() * 2 - 1) * 0.5 // Reduced randomness
         }
 
         if (
@@ -285,8 +287,8 @@ export default function PongGame({ roomId, isHost, username, opponent }: PongGam
           newState.ballY >= newState.paddle2Y &&
           newState.ballY <= newState.paddle2Y + PADDLE_HEIGHT
         ) {
-          newState.ballSpeedX = -newState.ballSpeedX
-          newState.ballSpeedY += Math.random() * 2 - 1
+          newState.ballSpeedX = -Math.abs(newState.ballSpeedX) // Ensure ball moves left
+          newState.ballSpeedY += (Math.random() * 2 - 1) * 0.5 // Reduced randomness
         }
 
         // Ball out of bounds - score
@@ -310,6 +312,10 @@ export default function PongGame({ roomId, isHost, username, opponent }: PongGam
           }
         }
 
+        // Keep ball speed in check
+        const maxSpeed = 10
+        newState.ballSpeedY = Math.max(Math.min(newState.ballSpeedY, maxSpeed), -maxSpeed)
+
         // Send game state to other player
         if (channelRef.current) {
           channelRef.current.trigger("client-game-state", newState)
@@ -318,9 +324,11 @@ export default function PongGame({ roomId, isHost, username, opponent }: PongGam
         return newState
       })
 
+      // Continue the game loop
       animationRef.current = requestAnimationFrame(updateGame)
     }
 
+    // Start the game loop
     animationRef.current = requestAnimationFrame(updateGame)
   }
 
@@ -329,7 +337,7 @@ export default function PongGame({ roomId, isHost, username, opponent }: PongGam
     state.ballX = CANVAS_WIDTH / 2
     state.ballY = CANVAS_HEIGHT / 2
     state.ballSpeedX = 5 * (Math.random() > 0.5 ? 1 : -1)
-    state.ballSpeedY = 5 * (Math.random() > 0.5 ? 1 : -1)
+    state.ballSpeedY = (Math.random() * 4 - 2) // Reduced initial vertical speed
   }
 
   // End game
@@ -352,6 +360,7 @@ export default function PongGame({ roomId, isHost, username, opponent }: PongGam
       const paddleY = isHost ? prev.paddle1Y : prev.paddle2Y
       const newPaddleY = Math.max(0, Math.min(CANVAS_HEIGHT - PADDLE_HEIGHT, paddleY + delta))
 
+      // Send paddle movement to other player immediately
       if (channelRef.current) {
         channelRef.current.trigger("client-paddle-move", {
           userId: userId.current,
