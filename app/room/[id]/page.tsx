@@ -9,6 +9,19 @@ import Link from "next/link"
 import { Copy, ArrowLeft } from "lucide-react"
 import PongGame from "@/components/pong-game"
 
+interface PusherMember {
+  id: string;
+  info: {
+    username: string;
+  };
+}
+
+interface PusherMembers {
+  count: number;
+  members: { [key: string]: { username: string } };
+  myID: string;
+}
+
 export default function RoomPage() {
   const { id } = useParams()
   const searchParams = useSearchParams()
@@ -34,6 +47,16 @@ export default function RoomPage() {
     // Initialize Pusher
     pusherRef.current = new Pusher(process.env.NEXT_PUBLIC_PUSHER_KEY!, {
       cluster: process.env.NEXT_PUBLIC_PUSHER_CLUSTER!,
+      authEndpoint: "/api/pusher/auth",
+      auth: {
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        params: {
+          user_id: userId.current,
+          username: username
+        }
+      }
     })
 
     // Subscribe to the room channel
@@ -41,12 +64,27 @@ export default function RoomPage() {
     channelRef.current = roomChannel
 
     // Handle connection established
-    roomChannel.bind("pusher:subscription_succeeded", (members: any) => {
+    roomChannel.bind("pusher:subscription_succeeded", (members: PusherMembers) => {
       setIsConnected(true)
+      console.log("Connected to presence channel", members)
 
-      // If this is the first player, they are the host
-      if (members.count === 1) {
-        setIsHost(true)
+      // Get all members as an array
+      const membersList = Object.entries(members.members)
+      
+      // Sort members by ID to ensure consistent host assignment
+      membersList.sort(([id1], [id2]) => id1.localeCompare(id2))
+      
+      // First member (lowest ID) is always the host
+      const [firstMemberId] = membersList[0] || []
+      setIsHost(firstMemberId === userId.current)
+
+      // If there are two players, set the opponent
+      if (membersList.length === 2) {
+        const otherMember = membersList.find(([id]) => id !== userId.current)
+        if (otherMember) {
+          const [_, memberInfo] = otherMember
+          setOpponent(memberInfo.username)
+        }
       }
 
       // Announce this player's presence
@@ -63,13 +101,25 @@ export default function RoomPage() {
       })
     })
 
-    // Handle new player joining
-    roomChannel.bind("player-joined", (data: any) => {
-      if (data.userId !== userId.current) {
-        setOpponent(data.username)
+    // Handle member added
+    roomChannel.bind("pusher:member_added", (member: PusherMember) => {
+      if (member.id !== userId.current) {
+        setOpponent(member.info.username)
         toast({
           title: "Player joined",
-          description: `${data.username} has joined the game`,
+          description: `${member.info.username} has joined the game`,
+        })
+      }
+    })
+
+    // Handle member removed
+    roomChannel.bind("pusher:member_removed", (member: PusherMember) => {
+      if (member.id !== userId.current) {
+        setOpponent(null)
+        toast({
+          title: "Player left",
+          description: `${member.info.username} has left the game`,
+          variant: "destructive",
         })
       }
     })

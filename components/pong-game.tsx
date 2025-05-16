@@ -60,6 +60,16 @@ export default function PongGame({ roomId, isHost, username, opponent }: PongGam
     if (!pusherRef.current) {
       pusherRef.current = new Pusher(process.env.NEXT_PUBLIC_PUSHER_KEY!, {
         cluster: process.env.NEXT_PUBLIC_PUSHER_CLUSTER!,
+        authEndpoint: "/api/pusher/auth",
+        auth: {
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+          params: {
+            user_id: userId.current,
+            username: username
+          }
+        }
       })
 
       const channel = pusherRef.current.subscribe(`presence-room-${roomId}`)
@@ -146,21 +156,37 @@ export default function PongGame({ roomId, isHost, username, opponent }: PongGam
 
     // Draw paddles
     ctx.fillStyle = "#fff"
+    // Left paddle is always Player 1 (host)
     ctx.fillRect(0, gameState.paddle1Y, PADDLE_WIDTH, PADDLE_HEIGHT)
+    // Right paddle is always Player 2 (guest)
     ctx.fillRect(CANVAS_WIDTH - PADDLE_WIDTH, gameState.paddle2Y, PADDLE_WIDTH, PADDLE_HEIGHT)
 
     // Draw ball
     ctx.fillRect(gameState.ballX - BALL_SIZE / 2, gameState.ballY - BALL_SIZE / 2, BALL_SIZE, BALL_SIZE)
 
-    // Draw scores
+    // Draw scores - scores are always displayed from the perspective of the current player
     ctx.font = "32px Arial"
-    ctx.fillText(gameState.score1.toString(), CANVAS_WIDTH / 4, 50)
-    ctx.fillText(gameState.score2.toString(), (CANVAS_WIDTH / 4) * 3, 50)
+    if (isHost) {
+      // If host, left score is mine (score1)
+      ctx.fillText(gameState.score1.toString(), CANVAS_WIDTH / 4, 50)
+      ctx.fillText(gameState.score2.toString(), (CANVAS_WIDTH / 4) * 3, 50)
+    } else {
+      // If guest, right score is mine (score2)
+      ctx.fillText(gameState.score2.toString(), CANVAS_WIDTH / 4, 50)
+      ctx.fillText(gameState.score1.toString(), (CANVAS_WIDTH / 4) * 3, 50)
+    }
 
-    // Draw player names
+    // Draw player names - names are always displayed from the perspective of the current player
     ctx.font = "16px Arial"
-    ctx.fillText(isHost ? username : opponent, CANVAS_WIDTH / 4, 80)
-    ctx.fillText(isHost ? opponent : username, (CANVAS_WIDTH / 4) * 3, 80)
+    if (isHost) {
+      // If host, I'm on the left
+      ctx.fillText(username, CANVAS_WIDTH / 4, 80)
+      ctx.fillText(opponent, (CANVAS_WIDTH / 4) * 3, 80)
+    } else {
+      // If guest, I'm on the right
+      ctx.fillText(username, (CANVAS_WIDTH / 4) * 3, 80)
+      ctx.fillText(opponent, CANVAS_WIDTH / 4, 80)
+    }
   }, [gameState, isHost, username, opponent])
 
   // Game loop
@@ -181,6 +207,7 @@ export default function PongGame({ roomId, isHost, username, opponent }: PongGam
         }
 
         // Ball collision with paddles
+        // Left paddle (Player 1/Host)
         if (
           newState.ballX <= PADDLE_WIDTH &&
           newState.ballY >= newState.paddle1Y &&
@@ -191,6 +218,7 @@ export default function PongGame({ roomId, isHost, username, opponent }: PongGam
           newState.ballSpeedY += Math.random() * 2 - 1
         }
 
+        // Right paddle (Player 2/Guest)
         if (
           newState.ballX >= CANVAS_WIDTH - PADDLE_WIDTH &&
           newState.ballY >= newState.paddle2Y &&
@@ -202,25 +230,25 @@ export default function PongGame({ roomId, isHost, username, opponent }: PongGam
         }
 
         // Ball out of bounds - score
+        // Left side - Player 2 scores
         if (newState.ballX < 0) {
-          // Player 2 scores
           newState.score2 += 1
           resetBall(newState)
 
           // Check for game over
           if (newState.score2 >= 5) {
-            endGame(opponent)
+            endGame(!isHost ? username : opponent)
           }
         }
 
+        // Right side - Player 1 scores
         if (newState.ballX > CANVAS_WIDTH) {
-          // Player 1 scores
           newState.score1 += 1
           resetBall(newState)
 
           // Check for game over
           if (newState.score1 >= 5) {
-            endGame(username)
+            endGame(isHost ? username : opponent)
           }
         }
 
