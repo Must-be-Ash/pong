@@ -23,6 +23,8 @@ interface GameState {
   paddle2Y: number
   score1: number
   score2: number
+  isPlaying: boolean
+  countdown: number
 }
 
 const CANVAS_WIDTH = 800
@@ -31,6 +33,7 @@ const PADDLE_HEIGHT = 100
 const PADDLE_WIDTH = 15
 const BALL_SIZE = 15
 const PADDLE_SPEED = 10
+const COUNTDOWN_START = 3
 
 export default function PongGame({ roomId, isHost, username, opponent }: PongGameProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -43,12 +46,15 @@ export default function PongGame({ roomId, isHost, username, opponent }: PongGam
     paddle2Y: CANVAS_HEIGHT / 2 - PADDLE_HEIGHT / 2,
     score1: 0,
     score2: 0,
+    isPlaying: false,
+    countdown: COUNTDOWN_START,
   })
   const [isGameOver, setIsGameOver] = useState(false)
   const [winner, setWinner] = useState<string | null>(null)
   const pusherRef = useRef<Pusher | null>(null)
   const channelRef = useRef<any>(null)
   const animationRef = useRef<number>(0)
+  const countdownTimerRef = useRef<NodeJS.Timeout | null>(null)
   const userId = useRef<string>("")
   const { toast } = useToast()
 
@@ -76,7 +82,7 @@ export default function PongGame({ roomId, isHost, username, opponent }: PongGam
       channelRef.current = channel
 
       // Handle paddle movement from opponent
-      channel.bind("paddle-move", (data: any) => {
+      channel.bind("client-paddle-move", (data: any) => {
         if (data.userId !== userId.current) {
           setGameState((prev) => ({
             ...prev,
@@ -87,16 +93,31 @@ export default function PongGame({ roomId, isHost, username, opponent }: PongGam
       })
 
       // Handle game state updates from host
-      channel.bind("game-state", (data: GameState) => {
+      channel.bind("client-game-state", (newState: GameState) => {
         if (!isHost) {
-          setGameState(data)
+          setGameState(newState)
+        }
+      })
+
+      // Handle countdown updates
+      channel.bind("client-countdown", (data: { countdown: number }) => {
+        if (!isHost) {
+          setGameState(prev => ({ ...prev, countdown: data.countdown }))
+        }
+      })
+
+      // Handle game start
+      channel.bind("client-game-start", () => {
+        if (!isHost) {
+          setGameState(prev => ({ ...prev, isPlaying: true }))
         }
       })
 
       // Handle game over
-      channel.bind("game-over", (data: { winner: string }) => {
+      channel.bind("client-game-over", (data: { winner: string }) => {
         setIsGameOver(true)
         setWinner(data.winner)
+        setGameState(prev => ({ ...prev, isPlaying: false }))
         cancelAnimationFrame(animationRef.current)
 
         toast({
@@ -106,10 +127,8 @@ export default function PongGame({ roomId, isHost, username, opponent }: PongGam
       })
     }
 
-    // Start game loop if host
-    if (isHost) {
-      startGameLoop()
-    }
+    // Start countdown
+    startCountdown()
 
     // Handle keyboard input
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -125,13 +144,50 @@ export default function PongGame({ roomId, isHost, username, opponent }: PongGam
     // Cleanup
     return () => {
       window.removeEventListener("keydown", handleKeyDown)
+      if (countdownTimerRef.current) {
+        clearInterval(countdownTimerRef.current)
+      }
       cancelAnimationFrame(animationRef.current)
-
       if (pusherRef.current) {
         pusherRef.current.unsubscribe(`presence-room-${roomId}`)
       }
     }
   }, [roomId, isHost, toast, opponent, username])
+
+  // Start countdown
+  const startCountdown = () => {
+    if (!isHost) return
+
+    setGameState(prev => ({ ...prev, countdown: COUNTDOWN_START }))
+    
+    countdownTimerRef.current = setInterval(() => {
+      setGameState(prev => {
+        const newState = {
+          ...prev,
+          countdown: prev.countdown - 1
+        }
+
+        // Broadcast countdown
+        if (channelRef.current) {
+          channelRef.current.trigger("client-countdown", { countdown: newState.countdown })
+        }
+
+        if (newState.countdown <= 0) {
+          clearInterval(countdownTimerRef.current!)
+          newState.isPlaying = true
+          
+          // Broadcast game start
+          if (channelRef.current) {
+            channelRef.current.trigger("client-game-start", {})
+          }
+          
+          startGameLoop()
+        }
+
+        return newState
+      })
+    }, 1000)
+  }
 
   // Draw game on canvas
   useEffect(() => {
@@ -154,36 +210,42 @@ export default function PongGame({ roomId, isHost, username, opponent }: PongGam
     ctx.stroke()
     ctx.setLineDash([])
 
+    // Draw countdown if not playing
+    if (!gameState.isPlaying && gameState.countdown > 0) {
+      ctx.font = "64px Arial"
+      ctx.fillStyle = "#fff"
+      ctx.textAlign = "center"
+      ctx.fillText(gameState.countdown.toString(), CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2)
+      ctx.textAlign = "left"
+    }
+
     // Draw paddles
     ctx.fillStyle = "#fff"
-    // Left paddle is always Player 1 (host)
     ctx.fillRect(0, gameState.paddle1Y, PADDLE_WIDTH, PADDLE_HEIGHT)
-    // Right paddle is always Player 2 (guest)
     ctx.fillRect(CANVAS_WIDTH - PADDLE_WIDTH, gameState.paddle2Y, PADDLE_WIDTH, PADDLE_HEIGHT)
 
-    // Draw ball
-    ctx.fillRect(gameState.ballX - BALL_SIZE / 2, gameState.ballY - BALL_SIZE / 2, BALL_SIZE, BALL_SIZE)
+    // Draw ball if playing
+    if (gameState.isPlaying) {
+      ctx.fillRect(gameState.ballX - BALL_SIZE / 2, gameState.ballY - BALL_SIZE / 2, BALL_SIZE, BALL_SIZE)
+    }
 
-    // Draw scores - scores are always displayed from the perspective of the current player
+    // Draw scores
     ctx.font = "32px Arial"
+    ctx.fillStyle = "#fff"
     if (isHost) {
-      // If host, left score is mine (score1)
       ctx.fillText(gameState.score1.toString(), CANVAS_WIDTH / 4, 50)
       ctx.fillText(gameState.score2.toString(), (CANVAS_WIDTH / 4) * 3, 50)
     } else {
-      // If guest, right score is mine (score2)
       ctx.fillText(gameState.score2.toString(), CANVAS_WIDTH / 4, 50)
       ctx.fillText(gameState.score1.toString(), (CANVAS_WIDTH / 4) * 3, 50)
     }
 
-    // Draw player names - names are always displayed from the perspective of the current player
+    // Draw player names
     ctx.font = "16px Arial"
     if (isHost) {
-      // If host, I'm on the left
       ctx.fillText(username, CANVAS_WIDTH / 4, 80)
       ctx.fillText(opponent, (CANVAS_WIDTH / 4) * 3, 80)
     } else {
-      // If guest, I'm on the right
       ctx.fillText(username, (CANVAS_WIDTH / 4) * 3, 80)
       ctx.fillText(opponent, CANVAS_WIDTH / 4, 80)
     }
@@ -194,6 +256,8 @@ export default function PongGame({ roomId, isHost, username, opponent }: PongGam
     if (!isHost) return
 
     const updateGame = () => {
+      if (!gameState.isPlaying) return
+
       setGameState((prev) => {
         const newState = { ...prev }
 
@@ -207,48 +271,42 @@ export default function PongGame({ roomId, isHost, username, opponent }: PongGam
         }
 
         // Ball collision with paddles
-        // Left paddle (Player 1/Host)
         if (
           newState.ballX <= PADDLE_WIDTH &&
           newState.ballY >= newState.paddle1Y &&
           newState.ballY <= newState.paddle1Y + PADDLE_HEIGHT
         ) {
           newState.ballSpeedX = -newState.ballSpeedX
-          // Add some randomness to the ball direction
           newState.ballSpeedY += Math.random() * 2 - 1
         }
 
-        // Right paddle (Player 2/Guest)
         if (
           newState.ballX >= CANVAS_WIDTH - PADDLE_WIDTH &&
           newState.ballY >= newState.paddle2Y &&
           newState.ballY <= newState.paddle2Y + PADDLE_HEIGHT
         ) {
           newState.ballSpeedX = -newState.ballSpeedX
-          // Add some randomness to the ball direction
           newState.ballSpeedY += Math.random() * 2 - 1
         }
 
         // Ball out of bounds - score
-        // Left side - Player 2 scores
         if (newState.ballX < 0) {
           newState.score2 += 1
           resetBall(newState)
 
-          // Check for game over
           if (newState.score2 >= 5) {
             endGame(!isHost ? username : opponent)
+            return newState
           }
         }
 
-        // Right side - Player 1 scores
         if (newState.ballX > CANVAS_WIDTH) {
           newState.score1 += 1
           resetBall(newState)
 
-          // Check for game over
           if (newState.score1 >= 5) {
             endGame(isHost ? username : opponent)
+            return newState
           }
         }
 
@@ -278,39 +336,28 @@ export default function PongGame({ roomId, isHost, username, opponent }: PongGam
   const endGame = (winnerName: string) => {
     setIsGameOver(true)
     setWinner(winnerName)
+    setGameState(prev => ({ ...prev, isPlaying: false }))
     cancelAnimationFrame(animationRef.current)
 
-    // Notify other player
-    fetch("/api/room/game-over", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        roomId,
-        winner: winnerName,
-      }),
-    })
+    if (channelRef.current) {
+      channelRef.current.trigger("client-game-over", { winner: winnerName })
+    }
   }
 
   // Move paddle
   const movePaddle = (delta: number) => {
+    if (!gameState.isPlaying) return
+
     setGameState((prev) => {
       const paddleY = isHost ? prev.paddle1Y : prev.paddle2Y
       const newPaddleY = Math.max(0, Math.min(CANVAS_HEIGHT - PADDLE_HEIGHT, paddleY + delta))
 
-      // Send paddle position to other player
-      fetch("/api/room/paddle-move", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          roomId,
+      if (channelRef.current) {
+        channelRef.current.trigger("client-paddle-move", {
           userId: userId.current,
           paddleY: newPaddleY,
-        }),
-      })
+        })
+      }
 
       return {
         ...prev,
@@ -320,14 +367,15 @@ export default function PongGame({ roomId, isHost, username, opponent }: PongGam
     })
   }
 
-  // Handle touch/mouse controls for mobile
+  // Handle touch/mouse controls
   const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!gameState.isPlaying) return
+
     const canvas = canvasRef.current
     if (!canvas) return
 
     const rect = canvas.getBoundingClientRect()
     const y = e.clientY - rect.top
-
     const paddleY = isHost ? gameState.paddle1Y : gameState.paddle2Y
     const paddleCenter = paddleY + PADDLE_HEIGHT / 2
 
@@ -344,7 +392,6 @@ export default function PongGame({ roomId, isHost, username, opponent }: PongGam
 
     setIsGameOver(false)
     setWinner(null)
-
     setGameState({
       ballX: CANVAS_WIDTH / 2,
       ballY: CANVAS_HEIGHT / 2,
@@ -354,19 +401,11 @@ export default function PongGame({ roomId, isHost, username, opponent }: PongGam
       paddle2Y: CANVAS_HEIGHT / 2 - PADDLE_HEIGHT / 2,
       score1: 0,
       score2: 0,
+      isPlaying: false,
+      countdown: COUNTDOWN_START,
     })
 
-    fetch("/api/room/restart", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        roomId,
-      }),
-    })
-
-    startGameLoop()
+    startCountdown()
   }
 
   return (
